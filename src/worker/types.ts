@@ -7,6 +7,9 @@ export interface Env {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   SESSION_SECRET: string;
+  CLOUDFLARE_TURN_KEY_ID?: string;
+  CLOUDFLARE_TURN_API_TOKEN?: string;
+  TURN_CREDENTIAL_TTL_SECONDS?: string;
 }
 
 export interface SessionUser {

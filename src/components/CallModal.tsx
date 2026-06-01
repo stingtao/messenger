@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { User, CallSignal } from '../types';
 import { Phone, PhoneOff, Video, VideoOff, Mic, MicOff } from 'lucide-react';
 import { websocketUrl } from '../lib/api';
+import { loadRtcConfiguration } from '../lib/webrtc';
 
 interface CallModalProps {
   isOpen: boolean;
@@ -12,15 +13,6 @@ interface CallModalProps {
   chatId: string;
   incomingCall?: CallSignal;
 }
-
-const servers: RTCConfiguration = {
-  iceServers: [
-    {
-      urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'],
-    },
-  ],
-  iceCandidatePoolSize: 10,
-};
 
 export default function CallModal({ isOpen, onClose, targetUser, currentUser, callType, chatId, incomingCall }: CallModalProps) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -143,13 +135,16 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
   };
 
   const createPeer = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: callType === 'video',
-      audio: true,
-    });
+    const [stream, rtcConfiguration] = await Promise.all([
+      navigator.mediaDevices.getUserMedia({
+        video: callType === 'video',
+        audio: true,
+      }),
+      loadRtcConfiguration(),
+    ]);
     setLocalStream(stream);
 
-    const connection = new RTCPeerConnection(servers);
+    const connection = new RTCPeerConnection(rtcConfiguration);
     pc.current = connection;
     stream.getTracks().forEach((track) => connection.addTrack(track, stream));
 

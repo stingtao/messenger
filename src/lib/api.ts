@@ -1,5 +1,12 @@
 import { User, Message, CallSignal } from '../types';
 
+export interface IceServerConfig {
+  iceServers: RTCIceServer[];
+  relayAvailable: boolean;
+  source: 'cloudflare-turn' | 'fallback-stun';
+  ttlSeconds: number | null;
+}
+
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
     super(message);
@@ -54,6 +61,7 @@ export const api = {
     });
   },
   incomingCalls: () => apiFetch<{ calls: CallSignal[] }>('/api/calls/incoming'),
+  turnIceServers: () => apiFetch<IceServerConfig>('/api/turn/ice-servers'),
 };
 
 export function websocketUrl(path: string): string {

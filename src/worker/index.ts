@@ -11,6 +11,7 @@ import {
 } from "./auth";
 import { ChatRoom } from "./chatRoom";
 import { callFromRow, messageFromRow } from "./format";
+import { getTurnIceServerConfig } from "./turn";
 import type { CallRow, Env, MessageRow, SessionUser, UserRow } from "./types";
 import { UserHub } from "./userHub";
 
@@ -38,7 +39,7 @@ const securityHeaders = {
     "script-src 'self'",
     "style-src 'self'",
     "img-src 'self' data: blob: https://*.googleusercontent.com https://lh3.googleusercontent.com",
-    "connect-src 'self' ws: wss:",
+    "connect-src 'self' ws: wss: stun: turn: turns:",
     "media-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
@@ -353,6 +354,10 @@ async function handleIncomingCalls(env: Env, user: SessionUser): Promise<Respons
   return json({ calls: results.map(callFromRow) });
 }
 
+async function handleTurnIceServers(env: Env): Promise<Response> {
+  return json(await getTurnIceServerConfig(env));
+}
+
 async function handleApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -371,6 +376,7 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && path === "/api/friends") return handleAddFriend(request, env, user);
   if (request.method === "GET" && path === "/api/ws/user") return handleUserWebSocket(request, env, user);
   if (request.method === "GET" && path === "/api/calls/incoming") return handleIncomingCalls(env, user);
+  if (request.method === "GET" && path === "/api/turn/ice-servers") return handleTurnIceServers(env);
 
   const chatMessagesMatch = path.match(/^\/api\/chats\/([^/]+)\/messages$/);
   if (chatMessagesMatch && request.method === "GET") {
