@@ -18,8 +18,37 @@ interface ClientEvent {
   candidate?: unknown;
 }
 
+interface ActiveCallRow {
+  id: string;
+  caller_id: string;
+  receiver_id: string;
+  type: "audio" | "video";
+  status: "calling" | "connected";
+  offer: string | null;
+  answer: string | null;
+}
+
+interface CandidateRow {
+  from_user: string;
+  candidate: string;
+}
+
 export class ChatRoom {
-  constructor(private state: DurableObjectState, private env: Env) {}
+  constructor(private state: DurableObjectState, private env: Env) {
+    this.state.blockConcurrencyWhile(async () => {
+      this.state.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS call_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          call_id TEXT NOT NULL,
+          from_user TEXT NOT NULL,
+          candidate TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_call_candidates_call_id
+          ON call_candidates (call_id, id);
+      `);
+    });
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -45,6 +74,7 @@ export class ChatRoom {
     const [client, server] = Object.values(pair);
     server.serializeAttachment({ userId, chatId } satisfies SocketMeta);
     this.state.acceptWebSocket(server);
+    await this.replayActiveCallState(server, userId, chatId);
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -87,7 +117,7 @@ export class ChatRoom {
     }
 
     if (event.type === "ice_candidate") {
-      this.broadcast(JSON.stringify({ type: "ice_candidate", callId: event.callId, from: meta.userId, candidate: event.candidate }), ws);
+      await this.handleIceCandidate(meta, event, ws);
       return;
     }
 
@@ -175,6 +205,35 @@ export class ChatRoom {
       .run();
 
     this.broadcast(JSON.stringify({ type: "call_answer", callId: event.callId, from: meta.userId, answer: event.answer }), ws);
+    await this.replayCandidatesForCall(event.callId, meta.userId, ws);
+  }
+
+  private async handleIceCandidate(meta: SocketMeta, event: ClientEvent, ws: WebSocket): Promise<void> {
+    if (!event.callId || !event.candidate) {
+      this.sendErrorTo(meta, "Invalid ICE candidate.");
+      return;
+    }
+
+    const call = await this.env.DB.prepare(
+      "SELECT 1 AS ok FROM calls WHERE id = ? AND chat_id = ? AND (caller_id = ? OR receiver_id = ?) AND status != 'ended'",
+    )
+      .bind(event.callId, meta.chatId, meta.userId, meta.userId)
+      .first<{ ok: number }>();
+
+    if (!call?.ok) {
+      this.sendErrorTo(meta, "ICE candidate does not belong to an active call.");
+      return;
+    }
+
+    this.state.storage.sql.exec(
+      "INSERT INTO call_candidates (call_id, from_user, candidate, created_at) VALUES (?, ?, ?, ?)",
+      event.callId,
+      meta.userId,
+      JSON.stringify(event.candidate),
+      Date.now(),
+    );
+
+    this.broadcast(JSON.stringify({ type: "ice_candidate", callId: event.callId, from: meta.userId, candidate: event.candidate }), ws);
   }
 
   private async handleCallHangup(meta: SocketMeta, event: ClientEvent): Promise<void> {
@@ -196,18 +255,74 @@ export class ChatRoom {
 
     const payload = { type: "call_hangup", callId: event.callId, from: meta.userId };
     this.broadcast(JSON.stringify(payload));
+    this.state.storage.sql.exec("DELETE FROM call_candidates WHERE call_id = ?", event.callId);
     if (call?.caller_id) await this.notifyUser(call.caller_id, payload);
     if (call?.receiver_id) await this.notifyUser(call.receiver_id, payload);
+  }
+
+  private async replayActiveCallState(ws: WebSocket, userId: string, chatId: string): Promise<void> {
+    const { results } = await this.env.DB.prepare(
+      `SELECT id, caller_id, receiver_id, type, status, offer, answer
+       FROM calls
+       WHERE chat_id = ?
+         AND status IN ('calling', 'connected')
+         AND (caller_id = ? OR receiver_id = ?)
+       ORDER BY updated_at DESC
+       LIMIT 3`,
+    )
+      .bind(chatId, userId, userId)
+      .all<ActiveCallRow>();
+
+    for (const call of results) {
+      this.safeSend(ws, JSON.stringify({
+        type: "incoming_call",
+        call: {
+          id: call.id,
+          chatId,
+          callerId: call.caller_id,
+          receiverId: call.receiver_id,
+          type: call.type,
+          status: call.status,
+          offer: call.offer ? JSON.parse(call.offer) : undefined,
+        },
+      }));
+
+      if (call.answer && userId === call.caller_id) {
+        this.safeSend(ws, JSON.stringify({
+          type: "call_answer",
+          callId: call.id,
+          from: call.receiver_id,
+          answer: JSON.parse(call.answer),
+        }));
+      }
+
+      await this.replayCandidatesForCall(call.id, userId, ws);
+    }
+  }
+
+  private async replayCandidatesForCall(callId: string, userId: string, ws: WebSocket): Promise<void> {
+    const rows = this.state.storage.sql
+      .exec(
+        "SELECT from_user, candidate FROM call_candidates WHERE call_id = ? AND from_user != ? ORDER BY id ASC",
+        callId,
+        userId,
+      )
+      .toArray() as unknown as CandidateRow[];
+
+    for (const row of rows) {
+      this.safeSend(ws, JSON.stringify({
+        type: "ice_candidate",
+        callId,
+        from: row.from_user,
+        candidate: JSON.parse(row.candidate),
+      }));
+    }
   }
 
   private broadcast(serializedEvent: string, except?: WebSocket): void {
     for (const ws of this.state.getWebSockets()) {
       if (ws === except) continue;
-      try {
-        ws.send(serializedEvent);
-      } catch {
-        ws.close(1011, "Delivery failed");
-      }
+      this.safeSend(ws, serializedEvent);
     }
   }
 
@@ -215,8 +330,16 @@ export class ChatRoom {
     for (const ws of this.state.getWebSockets()) {
       const socketMeta = ws.deserializeAttachment() as SocketMeta | undefined;
       if (socketMeta?.userId === meta.userId) {
-        ws.send(JSON.stringify({ type: "error", message }));
+        this.safeSend(ws, JSON.stringify({ type: "error", message }));
       }
+    }
+  }
+
+  private safeSend(ws: WebSocket, serializedEvent: string): void {
+    try {
+      ws.send(serializedEvent);
+    } catch {
+      ws.close(1011, "Delivery failed");
     }
   }
 

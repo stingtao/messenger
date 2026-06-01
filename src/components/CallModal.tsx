@@ -33,10 +33,12 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const pc = useRef<RTCPeerConnection | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const callIdRef = useRef<string | null>(incomingCall?.id ?? null);
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
+  const remoteCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
 
   useEffect(() => {
     if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream;
@@ -44,6 +46,12 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
 
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) remoteVideoRef.current.srcObject = remoteStream;
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.play().catch((error) => {
+        console.warn('Remote audio playback was blocked:', error);
+      });
+    }
   }, [remoteStream]);
 
   useEffect(() => {
@@ -72,11 +80,12 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
 
       if (payload.type === 'call_answer' && payload.from !== currentUser.uid && payload.answer) {
         await pc.current?.setRemoteDescription(new RTCSessionDescription(payload.answer));
+        await flushRemoteCandidateQueue();
         setCallStatus('connected');
       }
 
       if (payload.type === 'ice_candidate' && payload.from !== currentUser.uid && payload.candidate) {
-        await pc.current?.addIceCandidate(new RTCIceCandidate(payload.candidate));
+        await addRemoteCandidate(payload.candidate);
       }
 
       if (payload.type === 'call_hangup' && payload.from !== currentUser.uid) {
@@ -111,6 +120,28 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
     pendingCandidates.current = [];
   };
 
+  const addRemoteCandidate = async (candidate: RTCIceCandidateInit) => {
+    const connection = pc.current;
+    if (!connection?.remoteDescription) {
+      remoteCandidateQueue.current.push(candidate);
+      return;
+    }
+
+    try {
+      await connection.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (error) {
+      console.warn('Remote ICE candidate could not be added:', error);
+    }
+  };
+
+  const flushRemoteCandidateQueue = async () => {
+    const queued = remoteCandidateQueue.current;
+    remoteCandidateQueue.current = [];
+    for (const candidate of queued) {
+      await addRemoteCandidate(candidate);
+    }
+  };
+
   const createPeer = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: callType === 'video',
@@ -121,6 +152,19 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
     const connection = new RTCPeerConnection(servers);
     pc.current = connection;
     stream.getTracks().forEach((track) => connection.addTrack(track, stream));
+
+    connection.onconnectionstatechange = () => {
+      if (connection.connectionState === 'connected') setCallStatus('connected');
+      if (connection.connectionState === 'failed' || connection.connectionState === 'disconnected') {
+        console.warn('WebRTC connection state:', connection.connectionState);
+      }
+    };
+
+    connection.oniceconnectionstatechange = () => {
+      if (connection.iceConnectionState === 'failed' || connection.iceConnectionState === 'disconnected') {
+        console.warn('ICE connection state:', connection.iceConnectionState);
+      }
+    };
 
     connection.ontrack = (event) => {
       setRemoteStream(event.streams[0]);
@@ -154,6 +198,7 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
 
     const connection = await createPeer();
     await connection.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
+    await flushRemoteCandidateQueue();
     const answer = await connection.createAnswer();
     await connection.setLocalDescription(answer);
     sendSignal({ type: 'call_answer', callId: incomingCall.id, answer });
@@ -202,6 +247,7 @@ export default function CallModal({ isOpen, onClose, targetUser, currentUser, ca
           <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
+            <audio ref={remoteAudioRef} autoPlay playsInline />
             <div className="w-32 h-32 bg-gray-800 rounded-full flex items-center justify-center">
               <span className="text-5xl text-white">{targetUser.displayName?.charAt(0) || '?'}</span>
             </div>
