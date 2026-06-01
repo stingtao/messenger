@@ -67,4 +67,13 @@ describe('TURN ICE server configuration', () => {
     expect(usesBlockedBrowserPort('turns:turn.cloudflare.com:5349?transport=tcp')).toBe(false);
     expect(normalizeIceServers([{ urls: ['turn:turn.cloudflare.com:53?transport=udp'] }])).toEqual([]);
   });
+
+  it('falls back to STUN when Cloudflare TURN credential generation throws', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('network unavailable'));
+
+    const result = await getTurnIceServerConfig(turnEnv(), fetcher);
+
+    expect(result.relayAvailable).toBe(false);
+    expect(result.source).toBe('fallback-stun');
+  });
 });

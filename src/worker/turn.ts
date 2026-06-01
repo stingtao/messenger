@@ -70,21 +70,34 @@ export async function getTurnIceServerConfig(env: TurnEnv, fetcher: typeof fetch
   }
 
   const ttlSeconds = normalizeTurnTtl(env.TURN_CREDENTIAL_TTL_SECONDS);
-  const response = await fetcher(`${TURN_CREDENTIALS_ENDPOINT}/${encodeURIComponent(env.CLOUDFLARE_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.CLOUDFLARE_TURN_API_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ ttl: ttlSeconds }),
-  });
+  let response: Response;
+  try {
+    response = await fetcher(`${TURN_CREDENTIALS_ENDPOINT}/${encodeURIComponent(env.CLOUDFLARE_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.CLOUDFLARE_TURN_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ttl: ttlSeconds }),
+    });
+  } catch (error) {
+    console.warn("Cloudflare TURN credential generation could not be reached:", error);
+    return fallbackResponse();
+  }
 
   if (!response.ok) {
     console.warn("Cloudflare TURN credential generation failed:", response.status);
     return fallbackResponse();
   }
 
-  const body = (await response.json()) as TurnCredentialsResponse;
+  let body: TurnCredentialsResponse;
+  try {
+    body = (await response.json()) as TurnCredentialsResponse;
+  } catch (error) {
+    console.warn("Cloudflare TURN response could not be parsed:", error);
+    return fallbackResponse();
+  }
+
   const iceServers = normalizeIceServers(body.iceServers);
   if (!iceServers.some((server) => normalizeUrls(server.urls).some((url) => url.startsWith("turn:") || url.startsWith("turns:")))) {
     console.warn("Cloudflare TURN response did not include usable relay URLs.");
