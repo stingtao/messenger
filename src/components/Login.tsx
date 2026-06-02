@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { MessageCircle, AlertCircle, Loader2 } from 'lucide-react';
+import GoogleAd from './GoogleAd';
 
 export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
@@ -50,6 +51,8 @@ export default function Login() {
           )}
           {isLoading ? 'Connecting...' : 'Log in with Google'}
         </button>
+
+        <GoogleAd />
         
         <p className="mt-6 text-xs text-gray-400">
           Google will redirect back after authentication.

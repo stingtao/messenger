@@ -36,10 +36,11 @@ const jsonHeaders = {
 const securityHeaders = {
   "Content-Security-Policy": [
     "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self'",
-    "img-src 'self' data: blob: https://*.googleusercontent.com https://lh3.googleusercontent.com",
-    "connect-src 'self' ws: wss: stun: turn: turns:",
+    "script-src 'self' https://pagead2.googlesyndication.com https://www.googletagservices.com",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https://*.googleusercontent.com https://lh3.googleusercontent.com https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net https://www.google.com https://www.gstatic.com",
+    "connect-src 'self' ws: wss: stun: turn: turns: https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net",
+    "frame-src https://googleads.g.doubleclick.net https://tpc.googlesyndication.com",
     "media-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
